@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/config/db"
+	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/grpc/api"
+	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/grpc/server"
 	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/handler"
 	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/logger"
 	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/repository/audit/file"
@@ -27,7 +29,11 @@ import (
 	getService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/getService/v0"
 	hashService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/hashService/v0"
 	listMetricService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/listMetricService/v0"
-	updateBatchService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateBatchService/v0"
+	subnetService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/subnetService/service"
+	subnetServiceV0 "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/subnetService/v0"
+	updateBatchServiceRemote "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateBatchService/remote"
+	updateBatchService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateBatchService/service"
+	updateBatchServiceV0 "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateBatchService/v0"
 	updateCounterService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateCounterService/v0"
 	updateFlatService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateFlatService/v0"
 	updateGaugeService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateGaugeService/v0"
@@ -40,6 +46,7 @@ type DI struct {
 	config       *diConfig
 	logger       *logger.ZapLogger
 	httpServer   *http.Server
+	grpcServer   *server.Server
 	repositories struct {
 		encoder         *encode.JSONEncode
 		inmemoryStorage *inmemory.Repository
@@ -56,8 +63,11 @@ type DI struct {
 			getCounterService *getCounterService.Service
 			getGaugeService   *getGaugeService.Service
 		}
+		internal struct {
+			updateBatchRemoteService updateBatchService.UpdateBatchRemoteService
+		}
 		updateFlatService  *updateFlatService.Service
-		updateBatchService *updateBatchService.Service
+		updateBatchService updateBatchService.UpdateBatchService
 		updateService      *updateService.Service
 
 		getFlatService *getFlatService.Service
@@ -70,6 +80,7 @@ type DI struct {
 
 		hashService    *hashService.Service
 		decryptService decryptService.DecryptService
+		subnetService  subnetService.SubnetService
 
 		auditFileService   *auditFileService.Service
 		auditRemoteService *auditRemoteService.Service
@@ -80,6 +91,7 @@ type DI struct {
 	}
 	api struct {
 		external *handler.API
+		internal *api.API
 	}
 	infr struct {
 		db *db.PGConnect
@@ -96,6 +108,7 @@ func (di *DI) Init(envPrefix string) {
 	di.initServices()
 	di.initWorkers()
 	di.initAPI()
+	di.initGRPC()
 }
 
 func (di *DI) InitLogging() {
@@ -135,7 +148,7 @@ func (di *DI) initServices() {
 
 	di.services.updateFlatService = updateFlatService.New(di.services.included.updateCounterService,
 		di.services.included.updateGaugeService)
-	di.services.updateBatchService = updateBatchService.New(di.repositories.pgStorage)
+	di.services.updateBatchService = updateBatchServiceV0.New(di.repositories.pgStorage)
 	di.services.updateService = updateService.New(di.services.included.updateCounterService,
 		di.services.included.updateGaugeService)
 
@@ -152,9 +165,12 @@ func (di *DI) initServices() {
 	di.services.hashService = hashService.New(di.config.HashService)
 
 	di.services.decryptService = decryptServiceV0.New(di.config.DecryptService)
+	di.services.subnetService = subnetServiceV0.New(di.config.SubnetService)
 
 	di.services.auditFileService = auditFileService.New(di.config.AuditFileService, di.repositories.outbox, di.repositories.fileAuditor)
 	di.services.auditRemoteService = auditRemoteService.New(di.config.AuditRemoteService, di.repositories.outbox, di.repositories.remoteAuditor)
+
+	di.services.internal.updateBatchRemoteService = updateBatchServiceRemote.New(di.services.updateBatchService)
 }
 
 func (di *DI) initWorkers() {
@@ -182,6 +198,20 @@ func (di *DI) initAPI() {
 		di.services.dumpSyncMetricService,
 		di.services.hashService,
 		di.services.decryptService,
+		di.services.subnetService,
+	)
+
+	di.api.internal = api.New(
+		di.services.internal.updateBatchRemoteService,
+		di.services.subnetService,
+	)
+}
+
+func (di *DI) initGRPC() {
+	di.grpcServer = server.New(
+		di.config.GRPC,
+		di.api.internal,
+		di.api.internal.WithTrustedSubnet(),
 	)
 }
 
@@ -201,6 +231,8 @@ func (di *DI) Start(errorCh chan<- error, certFile string, keyFile string) {
 		go di.doDump(ctx)
 	}
 
+	di.grpcServer.Start(errorCh)
+
 	di.api.external.RegisterPing(di.infr.db)
 	di.api.external.RegisterHandlers()
 	di.api.external.RegisterPprof()
@@ -212,6 +244,7 @@ func (di *DI) Start(errorCh chan<- error, certFile string, keyFile string) {
 			handler.MiddlewareCompress,
 			di.api.external.WithHash,
 			di.api.external.WithDecrypt,
+			di.api.external.WithTrustedSubnet,
 		),
 	}
 
@@ -226,6 +259,7 @@ func (di *DI) Start(errorCh chan<- error, certFile string, keyFile string) {
 
 func (di *DI) Stop(ctx context.Context) {
 	di.httpServer.Shutdown(ctx)
+	di.grpcServer.Shutdown(ctx)
 	di.infr.db.Close()
 	di.repositories.fileAuditor.FileClose(context.TODO())
 }

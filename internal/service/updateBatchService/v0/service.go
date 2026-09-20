@@ -6,8 +6,11 @@ import (
 
 	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/entities"
 	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/models"
+	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateBatchService/service"
 	"github.com/MaksimMakarenko1001/ya-go-advanced/pkg"
 )
+
+var _ service.UpdateBatchService = (*Service)(nil)
 
 var (
 	errInvalidMetricValue *pkg.Error = pkg.ErrBadRequest.SetInfo("invalid metric value")

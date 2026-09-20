@@ -26,14 +26,17 @@ import (
 	"sync"
 	"time"
 
+	pb "github.com/MaksimMakarenko1001/ya-go-advanced/api/proto/metrics"
+	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/grpc/client"
 	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/models"
 	"github.com/MaksimMakarenko1001/ya-go-advanced/pkg"
 	"github.com/MaksimMakarenko1001/ya-go-advanced/pkg/backoff"
 )
 
 type Client struct {
-	httpClient *http.Client
 	config     Config
+	httpClient *http.Client
+	grpcClient *client.Client
 	memStats   runtime.MemStats
 	pollCount  int64
 	backoff    *backoff.Backoff
@@ -49,8 +52,9 @@ func NewClient(cfg Config) *Client {
 	}
 
 	return &Client{
-		httpClient: httpClient,
 		config:     cfg,
+		httpClient: httpClient,
+		grpcClient: client.New(cfg.GRPC).WithRealIP(cfg.RealIP),
 		backoff: backoff.NewBackoff(
 			cfg.MaxRetries,
 			ClassifyHTTPError,
@@ -98,6 +102,35 @@ func (c *Client) sendBatchJSON(batch []models.Metric) (err error) {
 	}
 
 	return nil
+}
+
+func (c *Client) sendBatchGRPC(batch []models.Metric) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	req := pb.UpdateMetricsRequest_builder{
+		Metrics: make([]*pb.Metric, 0, len(batch)),
+	}
+
+	for _, m := range batch {
+		metric := pb.Metric_builder{Id: m.ID}
+
+		switch m.MType {
+		case pkg.MetricTypeCounter:
+			metric.Type = pb.Metric_COUNTER
+			metric.Delta = *m.Delta
+		case pkg.MetricTypeGauge:
+			metric.Type = pb.Metric_GAUGE
+			metric.Value = *m.Value
+		}
+
+		req.Metrics = append(req.Metrics, metric.Build())
+	}
+
+	_, err := c.grpcClient.UpdateMetrics(context.Background(), req.Build())
+
+	return err
 }
 
 func (c *Client) sendGaugeMetric(metricName string, value float64) (err error) {
@@ -277,6 +310,20 @@ func (c *Client) sendWorker(id int, batchedCh <-chan []models.Metric, results ch
 	results <- fmt.Sprintf("#%d: done", id)
 }
 
+func (c *Client) sendWorkerGRPC(id int, batchedCh <-chan []models.Metric, results chan<- string) {
+	for batch := range batchedCh {
+		res := fmt.Sprintf("grpc#%d: success", id)
+
+		err := c.sendBatchGRPC(batch)
+		if err != nil {
+			res = fmt.Sprintf("grpc#%d: fail, %s", id, err.Error())
+		}
+
+		results <- res
+	}
+	results <- fmt.Sprintf("grpc#%d: done", id)
+}
+
 func (c *Client) Run(ctx context.Context) error {
 	doneCh := make(chan struct{})
 
@@ -285,9 +332,14 @@ func (c *Client) Run(ctx context.Context) error {
 	results := make(chan string, c.config.RateLimit)
 
 	var wg sync.WaitGroup
+	// http and grpc work simultaneously
 	for w := range c.config.RateLimit {
 		wg.Go(func() {
 			c.sendWorker(w, batchedCh, results)
+		})
+
+		wg.Go(func() {
+			c.sendWorkerGRPC(w, batchedCh, results)
 		})
 	}
 
@@ -335,6 +387,7 @@ func (c *Client) send(req *http.Request) (int, error) {
 	r.Header.Set("Content-Encoding", "gzip")
 	r.Header.Set("Accept-Encoding", "gzip")
 	r.Header.Set("HashSHA256", hash)
+	r.Header.Set("X-Real-IP", c.config.RealIP)
 
 	resp, err := c.httpClient.Do(r)
 

@@ -26,11 +26,19 @@ var ErrBadRequest = &Error{
 	Status:  http.StatusBadRequest,
 }
 
+// ErrNotFound represents a forbidden error.
+var ErrForbidden = &Error{
+	Message: "Forbidden",
+	Code:    "FORBIDDEN",
+	Status:  http.StatusForbidden,
+}
+
 // allowStatusError defines allowed HTTP status codes for errors.
 var allowStatusError = map[int]struct{}{
 	http.StatusInternalServerError: {},
 	http.StatusNotFound:            {},
 	http.StatusBadRequest:          {},
+	http.StatusForbidden:           {},
 }
 
 // ErrorCode represents a unique error code identifier.

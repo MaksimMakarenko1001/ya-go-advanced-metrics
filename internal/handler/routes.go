@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -18,7 +19,8 @@ import (
 	getService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/getService/v0"
 	hashService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/hashService/v0"
 	listMetricService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/listMetricService/v0"
-	updateBatchService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateBatchService/v0"
+	subnetService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/subnetService/service"
+	updateBatchService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateBatchService/service"
 	updateFlatService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateFlatService/v0"
 	updateService "github.com/MaksimMakarenko1001/ya-go-advanced/internal/service/updateService/v0"
 )
@@ -34,7 +36,7 @@ type API struct {
 	logger logger.HTTPLogger
 
 	updateFlatService  *updateFlatService.Service
-	updateBatchService *updateBatchService.Service
+	updateBatchService updateBatchService.UpdateBatchService
 	updateService      *updateService.Service
 
 	getFlatService *getFlatService.Service
@@ -46,12 +48,13 @@ type API struct {
 	hashService           *hashService.Service
 
 	decryptService decryptService.DecryptService
+	subnetService  subnetService.SubnetService
 }
 
 func New(
 	logger logger.HTTPLogger,
 	updateFlatService *updateFlatService.Service,
-	updateBatchService *updateBatchService.Service,
+	updateBatchService updateBatchService.UpdateBatchService,
 	updateService *updateService.Service,
 	getFlatService *getFlatService.Service,
 	getService *getService.Service,
@@ -59,6 +62,7 @@ func New(
 	dumpSyncMetricService *dumpMetricService.Service,
 	hashService *hashService.Service,
 	decryptService decryptService.DecryptService,
+	subnetService subnetService.SubnetService,
 ) *API {
 	return &API{
 		router:                chi.NewRouter(),
@@ -72,6 +76,7 @@ func New(
 		dumpSyncMetricService: dumpSyncMetricService,
 		hashService:           hashService,
 		decryptService:        decryptService,
+		subnetService:         subnetService,
 	}
 }
 
@@ -220,6 +225,19 @@ func (api API) WithDecrypt(h http.Handler) http.Handler {
 		}
 
 		r.Body = io.NopCloser(bytes.NewBuffer(decrypted))
+
+		h.ServeHTTP(w, r)
+	})
+}
+
+func (api API) WithTrustedSubnet(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
+			if err := api.subnetService.Validate(r.Context(), net.ParseIP(realIP)); err != nil {
+				WriteError(w, err)
+				return
+			}
+		}
 
 		h.ServeHTTP(w, r)
 	})

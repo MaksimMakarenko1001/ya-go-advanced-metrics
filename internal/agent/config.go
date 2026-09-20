@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/MaksimMakarenko1001/ya-go-advanced/internal/grpc/client"
 	"github.com/caarlos0/env/v6"
 )
 
@@ -24,6 +25,8 @@ type Config struct {
 	ConfigJSON     struct {
 		Config string `env:"CONFIG" json:"config"`
 	} `json:"configJSON"`
+	RealIP string        `env:"REAL_IP" envDefault:"127.0.0.1" json:"realIP"`
+	GRPC   client.Config `envPrefix:"GRPC_" json:"grpc"`
 }
 
 func (cfg *Config) LoadConfig(envPrefix string) {
@@ -60,6 +63,7 @@ func (cfg *Config) loadFromJSON(envPrefix string) {
 
 	var config struct {
 		Address        string `json:"address"`
+		RemoteAddress  string `json:"remote_address"`
 		ReportInterval string `json:"report_interval"`
 		PollInterval   string `json:"poll_interval"`
 		CryptoKey      string `json:"crypto_key"`
@@ -79,6 +83,9 @@ func (cfg *Config) loadFromJSON(envPrefix string) {
 	if address := config.Address; address != "" {
 		cfg.Address = address
 	}
+	if address := config.RemoteAddress; address != "" {
+		cfg.GRPC.Address = address
+	}
 	if reportInterval := config.ReportInterval; reportInterval != "" {
 		if report, err := time.ParseDuration(reportInterval); err == nil {
 			cfg.ReportInterval = report
@@ -96,15 +103,17 @@ func (cfg *Config) loadFromJSON(envPrefix string) {
 
 func (cfg *Config) loadFromArg() {
 	var config struct {
-		Address   string
-		Pool      int
-		Report    int
-		Key       string
-		RateLimit int
-		CryptoKey string
+		Address       string
+		RemoteAddress string
+		Pool          int
+		Report        int
+		Key           string
+		RateLimit     int
+		CryptoKey     string
 	}
 
 	flag.StringVar(&config.Address, "a", "", "agent net address")
+	flag.StringVar(&config.RemoteAddress, "remote-address", "", "remote server net address")
 	flag.IntVar(&config.Pool, "p", 0, "pool interval in seconds")
 	flag.IntVar(&config.Report, "r", 0, "report interval in seconds")
 	flag.StringVar(&config.Key, "k", "", "hash key")
@@ -115,6 +124,9 @@ func (cfg *Config) loadFromArg() {
 
 	if address := config.Address; address != "" {
 		cfg.Address = address
+	}
+	if address := config.RemoteAddress; address != "" {
+		cfg.GRPC.Address = address
 	}
 	if pool := config.Pool; pool > 0 {
 		cfg.PollInterval = time.Second * time.Duration(pool)
@@ -143,6 +155,9 @@ func (cfg *Config) loadFromEnv(envPrefix string) {
 
 	if address := config.Address; address != "" {
 		cfg.Address = address
+	}
+	if address := config.GRPC.Address; address != "" {
+		cfg.GRPC.Address = address
 	}
 	if pool := config.PollInterval; pool.String() != "0s" {
 		cfg.PollInterval = pool
